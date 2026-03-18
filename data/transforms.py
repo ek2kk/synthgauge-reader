@@ -18,7 +18,7 @@ def build_transforms(cfg: Dict[str, Any], split: str) -> Callable:
     split: 'train' or 'val' (или 'test')
     Возвращает callable, который принимает PIL.Image и возвращает torch.Tensor [3,H,W]
     """
-    tcfg = cfg.get("transforms", {})
+    tcfg = cfg.get("transforms", cfg.get("transforms_reg", {}))
     img_size = int(tcfg.get("img_size", 256))
     normalize = bool(tcfg.get("normalize", True))
     mean, std = _get_mean_std(tcfg)

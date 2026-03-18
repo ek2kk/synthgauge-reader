@@ -8,6 +8,15 @@ dependencies = [
     "albumentations>=2.0.8",
     "kagglehub>=0.4.2",
     "matplotlib>=3.10.8",
-    "torch>=2.10.0",
-    "torchvision>=0.25.0",
+    "torch==2.10.0+cu128",
+    "torchvision==0.25.0+cu128",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

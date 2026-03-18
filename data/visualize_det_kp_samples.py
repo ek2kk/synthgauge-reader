@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import random
 from pathlib import Path
@@ -11,6 +12,12 @@ from PIL import Image
 from utils.config import load_config
 
 N_SAMPLES = 10
+
+
+def _parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", type=str, default="configs/config_det_kp.yaml")
+    return ap.parse_args()
 
 
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -61,7 +68,8 @@ def draw_skeleton(ax, kps: List[List[float]], names: List[str]) -> None:
 
 
 def main() -> None:
-    cfg = load_config("configs/config.yaml")
+    args = _parse_args()
+    cfg = load_config(args.config)
 
     idx_path = Path(cfg["paths"]["train_det_kp_output_json"]).resolve()
     if not idx_path.exists():

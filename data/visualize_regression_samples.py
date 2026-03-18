@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import random
 from pathlib import Path
@@ -12,6 +13,12 @@ from utils.config import load_config
 N_SAMPLES = 10
 
 
+def _parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", type=str, default="configs/config_regression.yaml")
+    return ap.parse_args()
+
+
 def load_index(path: Path):
     samples = []
     with path.open("r", encoding="utf-8") as f:
@@ -21,9 +28,15 @@ def load_index(path: Path):
 
 
 def main():
-    cfg = load_config("configs/config.yaml")
+    args = _parse_args()
+    cfg = load_config(args.config)
 
-    index_path = Path(cfg["paths"]["train_output_json"]).resolve()
+    paths = cfg.get("paths", {})
+    index_path = Path(
+        paths.get("train_reg_output_json")
+        or paths.get("train_output_json")
+        or paths.get("train_inst_json")
+    ).resolve()
     if not index_path.exists():
         raise FileNotFoundError(f"Index file not found: {index_path}")
 

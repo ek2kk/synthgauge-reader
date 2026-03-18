@@ -1,0 +1,56 @@
+dataset:
+  name: endava_synthetic
+
+paths:
+  raw_ds_path: data/raw
+  processed_ds_path: data/processed
+
+  train_inst_coco: train__inst_coco.json
+  val_inst_coco: val__inst_coco.json
+
+  train_reg_output_json: data/processed/train_regression.jsonl
+  val_reg_output_json: data/processed/val_regression.jsonl
+
+  weights_dir_reg: models/weights/reg
+
+regression_target:
+  category_name: dial
+  value_key: synth_dial_value
+
+transforms:
+  img_size: 256
+  normalize: true
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+  train:
+    hflip_p: 0.0
+    color_jitter_p: 0.3
+    color_jitter: [0.2, 0.2, 0.2, 0.05]
+    random_affine_p: 0.3
+    degrees: 7
+    translate: 0.02
+    scale: [0.95, 1.05]
+    blur_p: 0.2
+
+model:
+  backbone: convnext_tiny
+  pretrained: true
+  dropout: 0.1
+
+training:
+  device: cuda
+  epochs: 30
+  batch_size: 32
+  num_workers: 4
+  lr: 3e-4
+  weight_decay: 1e-4
+  amp: true
+  seed: 42
+
+  loss: huber
+  huber_delta: 0.05
+
+  best_metric: mae
+  tol: 0.05
+  log_every: 50

@@ -1,0 +1,61 @@
+dataset:
+  name: endava_synthetic
+
+paths:
+  raw_ds_path: data/raw
+  processed_ds_path: data/processed
+
+  train_inst_coco: train__inst_coco.json
+  val_inst_coco: val__inst_coco.json
+  train_kpts_coco: train__kpts_coco.json
+  val_kpts_coco: val__kpts_coco.json
+
+  train_det_kp_output_json: data/processed/train_det_kp.jsonl
+  val_det_kp_output_json: data/processed/val_det_kp.jsonl
+
+  weights_dir_det_kp: models/weights/det_kp
+
+keypoints_target:
+  category_name: face_plate
+  names:
+    - dial_max
+    - dial_min
+    - dial_center
+    - dial_tip
+  num_keypoints: 4
+  format: coco_xyv
+
+detector_target:
+  category_name: face_plate
+  num_classes: 1
+
+transforms_det_kp:
+  backend: albumentations
+  img_size: 256
+  bbox_format: pascal_voc
+  clip: true
+  min_visibility: 0.0
+
+  train:
+    photometric_p: 0.7
+    rotate_limit: 3
+    scale_limit: 0.05
+    translate_limit: 0.02
+    blur_p: 0.2
+    jpeg_p: 0.2
+
+training_det_kp:
+  device: cuda
+  epochs: 50
+  batch_size: 8
+  num_workers: 4
+  lr: 1e-4
+  weight_decay: 1e-4
+  amp: true
+  seed: 42
+  pretrained_coco: false
+
+  best_metric: kpt_mae
+  pck_thr: 0.05
+  score_thr: 0.3
+  log_every: 50

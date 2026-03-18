@@ -19,6 +19,8 @@ def _get_device(device_cfg: str) -> torch.device:
     if device_cfg == "cpu":
         return torch.device("cpu")
     if device_cfg == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA requested but unavailable.")
         return torch.device("cuda")
     # auto
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -32,6 +34,23 @@ def _setup_logger() -> logging.Logger:
         h.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s"))
         logger.addHandler(h)
     return logger
+
+
+def _log_device_info(logger: logging.Logger, device: torch.device) -> None:
+    if device.type != "cuda":
+        logger.warning(f"Evaluation is running on {device.type}, not CUDA.")
+        return
+
+    idx = torch.cuda.current_device()
+    props = torch.cuda.get_device_properties(idx)
+    total_mem_gb = props.total_memory / (1024**3)
+    logger.info(
+        "cuda_device="
+        f"index={idx} "
+        f"name={torch.cuda.get_device_name(idx)} "
+        f"capability={props.major}.{props.minor} "
+        f"vram={total_mem_gb:.2f}GB"
+    )
 
 
 def load_model(
@@ -68,7 +87,7 @@ def evaluate(
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
 
-        with torch.autocast(device_type="cuda", enabled=amp):
+        with torch.autocast(device_type=device.type, enabled=amp and device.type == "cuda"):
             y_pred = model(x)  # [B]
 
         meter.update(y_pred, y)
@@ -77,23 +96,27 @@ def evaluate(
 
 
 def main() -> None:
-    cfg = load_config("configs/config.yaml")
+    cfg = load_config("configs/config_regression.yaml")
     logger = _setup_logger()
 
     tcfg = cfg.get("training", {})
     device = _get_device(tcfg.get("device", "auto"))
+    _log_device_info(logger, device)
     amp_cfg = bool(tcfg.get("amp", True))
     amp = amp_cfg and device.type == "cuda"
     tol = tcfg.get("tol", None)
     tol = float(tol) if tol is not None else None
 
-    val_index = Path(cfg["paths"]["val_output_json"]).resolve()
+    paths = cfg.get("paths", {})
+    val_index = Path(
+        paths.get("val_reg_output_json")
+        or paths.get("val_output_json")
+        or paths.get("val_inst_json")
+    ).resolve()
     if not val_index.exists():
         raise FileNotFoundError(f"val index not found: {val_index}")
 
-    weights_dir = Path(
-        cfg.get("paths", {}).get("weights_dir", "models/weights")
-    ).resolve()
+    weights_dir = Path(paths.get("weights_dir_reg", "models/weights/reg")).resolve()
     weights_path = weights_dir / "best.pt"
     if not weights_path.exists():
         weights_path = weights_dir / "last.pt"

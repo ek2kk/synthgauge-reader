@@ -1,10 +1,17 @@
 # data/build_det_kp_dataset.py
 from __future__ import annotations
 
+import argparse
 import json
+import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from utils.config import load_config
 
@@ -18,6 +25,93 @@ class TargetSpec:
 
 def _read_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _required_files_from_cfg(paths_cfg: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    return (
+        str(paths_cfg["train_inst_coco"]),
+        str(paths_cfg["val_inst_coco"]),
+        str(paths_cfg["train_kpts_coco"]),
+        str(paths_cfg["val_kpts_coco"]),
+    )
+
+
+def _is_dataset_dir(path: Path, required_files: Tuple[str, str, str, str]) -> bool:
+    if not path.exists() or not path.is_dir():
+        return False
+    return all((path / name).exists() for name in required_files)
+
+
+def _dataset_sort_key(path: Path) -> Tuple[int, ...]:
+    m = re.search(r"(\d+(?:\.\d+)*)", path.name)
+    if not m:
+        return (-1,)
+    return tuple(int(p) for p in m.group(1).split("."))
+
+
+def _resolve_raw_base(cfg: Dict[str, Any], raw_root_arg: str | None) -> Path:
+    if raw_root_arg:
+        return Path(raw_root_arg).resolve()
+
+    cfg_raw = Path(str(cfg["paths"].get("raw_ds_path", ""))).resolve()
+    if cfg_raw.exists():
+        return cfg_raw
+
+    fallback = Path("data/raw").resolve()
+    if fallback.exists():
+        return fallback
+
+    # keep old behavior as much as possible if nothing exists
+    return cfg_raw
+
+
+def _discover_dataset_dirs(
+    raw_base: Path, required_files: Tuple[str, str, str, str]
+) -> List[Path]:
+    if _is_dataset_dir(raw_base, required_files):
+        return [raw_base]
+
+    if not raw_base.exists():
+        raise FileNotFoundError(
+            f"Raw dataset path not found: {raw_base}\n"
+            "Hint: set paths.raw_ds_path to an existing dataset directory "
+            "or pass --raw-root data/raw"
+        )
+
+    candidates: List[Path] = []
+    for child in raw_base.iterdir():
+        if _is_dataset_dir(child, required_files):
+            candidates.append(child.resolve())
+
+    candidates.sort(key=_dataset_sort_key)
+    return candidates
+
+
+def _select_dataset_dirs(candidates: List[Path], dataset_arg: str) -> List[Path]:
+    if not candidates:
+        raise FileNotFoundError(
+            "No dataset directories with required COCO files were found."
+        )
+
+    mode = dataset_arg.strip()
+    if mode == "all":
+        return candidates
+    if mode == "auto":
+        return [candidates[-1]]
+
+    selected = [d for d in candidates if d.name == mode]
+    if not selected:
+        available = ", ".join(d.name for d in candidates)
+        raise ValueError(
+            f"Dataset '{mode}' not found. Available: {available}. "
+            "Use --dataset all|auto|<folder_name>."
+        )
+    return selected
+
+
+def _reindex_image_ids(records: List[Dict[str, Any]]) -> None:
+    for idx, rec in enumerate(records):
+        rec["image_id"] = idx
 
 
 def _find_category_id(categories: List[Dict[str, Any]], name: str) -> int:
@@ -262,19 +356,48 @@ def _write_jsonl(records: List[Dict[str, Any]], out_path: Path) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
+def _parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        description="Build det+keypoints JSONL index from one or more COCO dataset folders."
+    )
+    ap.add_argument("--config", type=str, default="configs/config_det_kp.yaml")
+    ap.add_argument(
+        "--raw-root",
+        type=str,
+        default=None,
+        help="Path to dataset folder OR parent folder containing multiple dataset folders.",
+    )
+    ap.add_argument(
+        "--dataset",
+        type=str,
+        default="all",
+        help="Dataset selection mode: all | auto | <folder_name>.",
+    )
+    ap.add_argument("--out-train", type=str, default=None)
+    ap.add_argument("--out-val", type=str, default=None)
+    return ap.parse_args()
+
+
 def main() -> None:
-    cfg = load_config("configs/config.yaml")
+    args = _parse_args()
+    cfg = load_config(args.config)
+    paths_cfg = cfg["paths"]
 
-    raw_ds_path = Path(cfg["paths"]["raw_ds_path"]).resolve()
-    images_root = raw_ds_path
+    required_files = _required_files_from_cfg(paths_cfg)
+    raw_base = _resolve_raw_base(cfg, args.raw_root)
+    candidates = _discover_dataset_dirs(raw_base, required_files)
+    selected_dirs = _select_dataset_dirs(candidates, args.dataset)
 
-    train_inst = raw_ds_path / cfg["paths"]["train_inst_coco"]
-    val_inst = raw_ds_path / cfg["paths"]["val_inst_coco"]
-    train_kpts = raw_ds_path / cfg["paths"]["train_kpts_coco"]
-    val_kpts = raw_ds_path / cfg["paths"]["val_kpts_coco"]
-
-    out_train = Path(cfg["paths"]["train_det_kp_output_json"]).resolve()
-    out_val = Path(cfg["paths"]["val_det_kp_output_json"]).resolve()
+    out_train = (
+        Path(args.out_train).resolve()
+        if args.out_train
+        else Path(paths_cfg["train_det_kp_output_json"]).resolve()
+    )
+    out_val = (
+        Path(args.out_val).resolve()
+        if args.out_val
+        else Path(paths_cfg["val_det_kp_output_json"]).resolve()
+    )
 
     kp_cfg = cfg["keypoints_target"]
     target = TargetSpec(
@@ -283,32 +406,55 @@ def main() -> None:
         num_keypoints=int(kp_cfg["num_keypoints"]),
     )
 
-    # Sanity checks
-    for p in [train_inst, val_inst, train_kpts, val_kpts]:
-        if not p.exists():
-            raise FileNotFoundError(f"File not found: {p}")
-    if not images_root.exists():
-        raise FileNotFoundError(f"images_root not found: {images_root}")
-
-    print(f"[INFO] raw_ds_path:  {raw_ds_path}")
-    print(f"[INFO] images_root:  {images_root}")
+    print(f"[INFO] raw_base:     {raw_base}")
+    print(f"[INFO] selected ds: {', '.join(d.name for d in selected_dirs)}")
     print(
         f"[INFO] target:       {target.category_name} | k={target.num_keypoints} | {target.keypoint_names}"
     )
+    print(f"[INFO] out_train:    {out_train}")
+    print(f"[INFO] out_val:      {out_val}")
 
-    # Train
-    inst_coco = _read_json(train_inst)
-    kpts_coco = _read_json(train_kpts)
-    train_records = build_det_kp_index(inst_coco, kpts_coco, images_root, target)
-    _write_jsonl(train_records, out_train)
-    print(f"[OK] wrote {len(train_records)} -> {out_train}")
+    all_train_records: List[Dict[str, Any]] = []
+    all_val_records: List[Dict[str, Any]] = []
 
-    # Val
-    inst_coco = _read_json(val_inst)
-    kpts_coco = _read_json(val_kpts)
-    val_records = build_det_kp_index(inst_coco, kpts_coco, images_root, target)
-    _write_jsonl(val_records, out_val)
-    print(f"[OK] wrote {len(val_records)} -> {out_val}")
+    for ds_dir in selected_dirs:
+        images_root = ds_dir
+        train_inst = ds_dir / paths_cfg["train_inst_coco"]
+        val_inst = ds_dir / paths_cfg["val_inst_coco"]
+        train_kpts = ds_dir / paths_cfg["train_kpts_coco"]
+        val_kpts = ds_dir / paths_cfg["val_kpts_coco"]
+
+        for p in [train_inst, val_inst, train_kpts, val_kpts]:
+            if not p.exists():
+                raise FileNotFoundError(f"File not found: {p}")
+
+        print(f"[INFO] processing:  {ds_dir}")
+
+        inst_coco = _read_json(train_inst)
+        kpts_coco = _read_json(train_kpts)
+        train_records = build_det_kp_index(inst_coco, kpts_coco, images_root, target)
+        for rec in train_records:
+            rec["source_dataset"] = ds_dir.name
+        all_train_records.extend(train_records)
+        print(f"[OK] train records from {ds_dir.name}: {len(train_records)}")
+
+        inst_coco = _read_json(val_inst)
+        kpts_coco = _read_json(val_kpts)
+        val_records = build_det_kp_index(inst_coco, kpts_coco, images_root, target)
+        for rec in val_records:
+            rec["source_dataset"] = ds_dir.name
+        all_val_records.extend(val_records)
+        print(f"[OK] val records from {ds_dir.name}:   {len(val_records)}")
+
+    # If combining multiple dataset folders, make image ids unique within each split.
+    if len(selected_dirs) > 1:
+        _reindex_image_ids(all_train_records)
+        _reindex_image_ids(all_val_records)
+
+    _write_jsonl(all_train_records, out_train)
+    _write_jsonl(all_val_records, out_val)
+    print(f"[OK] wrote {len(all_train_records)} train records -> {out_train}")
+    print(f"[OK] wrote {len(all_val_records)} val records   -> {out_val}")
 
 
 if __name__ == "__main__":
