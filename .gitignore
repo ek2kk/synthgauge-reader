@@ -50,6 +50,4 @@ Thumbs.db
 *.log
 *.tmp
 
-data/processed
 data/raw
-models/weights
