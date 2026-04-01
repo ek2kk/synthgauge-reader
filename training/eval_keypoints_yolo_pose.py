@@ -74,7 +74,7 @@ def _resolve_weights_path(cfg: Dict[str, Any], explicit: Optional[str]) -> Path:
         return p
 
     model_name = _normalize_model_name(
-        str(cfg.get("model", {}).get("name", "yolov8n-pose.pt"))
+        str(cfg.get("model", {}).get("name", "yolo11s-pose.pt"))
     )
     weights_dir = _resolve_weights_dir(cfg, model_name=model_name)
     candidates = [
@@ -167,4 +167,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -27,6 +30,13 @@ class RegressionLayout:
     images_root: Path
 
 
+@dataclass(frozen=True)
+class CropConfig:
+    enabled: bool
+    pad_ratio: float
+    out_root: Path
+
+
 def _required_files_from_cfg(paths_cfg: Dict[str, Any]) -> Tuple[str, str]:
     return str(paths_cfg["train_inst_coco"]), str(paths_cfg["val_inst_coco"])
 
@@ -40,7 +50,6 @@ def _optional_test_file_from_cfg(paths_cfg: Dict[str, Any]) -> Optional[str]:
 
 def _infer_test_relpaths(train_rel: str, val_rel: str) -> List[str]:
     candidates: List[str] = []
-
     for src, old in [(train_rel, "train"), (val_rel, "val")]:
         if old in src:
             repl = src.replace(old, "test", 1)
@@ -62,8 +71,6 @@ def _resolve_regression_layout(
         if candidate_images_root.exists():
             cfg_images_root = candidate_images_root
 
-    # Endava-like layout:
-    #   ds/train__inst_coco.json, ds/val__inst_coco.json, file_name starts with "data/..."
     cfg_test_path: Optional[Path] = None
     if optional_test_file:
         candidate = dataset_dir / optional_test_file
@@ -85,9 +92,6 @@ def _resolve_regression_layout(
     if cfg_layout.train_coco.exists() and cfg_layout.val_coco.exists():
         return cfg_layout
 
-    # HF synthetic-analog-gauges layout:
-    #   ds/annotations/instances_train.json, ds/annotations/instances_val.json, [instances_test.json]
-    #   ds/images/{train,val,test}/...
     hf_test = dataset_dir / "annotations" / "instances_test.json"
     hf_layout = RegressionLayout(
         train_coco=dataset_dir / "annotations" / "instances_train.json",
@@ -108,9 +112,7 @@ def _is_dataset_dir(
 ) -> bool:
     if not path.exists() or not path.is_dir():
         return False
-    return (
-        _resolve_regression_layout(path, required_files, optional_test_file) is not None
-    )
+    return _resolve_regression_layout(path, required_files, optional_test_file) is not None
 
 
 def _dataset_sort_key(path: Path) -> Tuple[int, ...]:
@@ -161,9 +163,7 @@ def _discover_dataset_dirs(
 
 def _select_dataset_dirs(candidates: List[Path], dataset_arg: str) -> List[Path]:
     if not candidates:
-        raise FileNotFoundError(
-            "No dataset directories with required COCO files were found."
-        )
+        raise FileNotFoundError("No dataset directories with required COCO files were found.")
 
     mode = dataset_arg.strip()
     if mode == "all":
@@ -214,6 +214,51 @@ def _annotation_matches_category(
     return False
 
 
+def _bbox_xywh_to_xyxy(bbox: List[float]) -> tuple[float, float, float, float]:
+    x, y, w, h = [float(v) for v in bbox]
+    return x, y, x + w, y + h
+
+
+def _crop_box_from_bbox(
+    bbox_xywh: List[float],
+    img_w: int,
+    img_h: int,
+    pad_ratio: float,
+) -> tuple[int, int, int, int]:
+    x1, y1, x2, y2 = _bbox_xywh_to_xyxy(bbox_xywh)
+    bw = max(1.0, x2 - x1)
+    bh = max(1.0, y2 - y1)
+    side = max(bw, bh) * (1.0 + 2.0 * max(0.0, pad_ratio))
+    cx = (x1 + x2) / 2.0
+    cy = (y1 + y2) / 2.0
+
+    rx1 = int(max(0, min(img_w - 1, round(cx - side / 2.0))))
+    ry1 = int(max(0, min(img_h - 1, round(cy - side / 2.0))))
+    rx2 = int(max(rx1 + 1, min(img_w, round(cx + side / 2.0))))
+    ry2 = int(max(ry1 + 1, min(img_h, round(cy + side / 2.0))))
+    return rx1, ry1, rx2, ry2
+
+
+def _safe_crop_save(
+    src_image_path: Path,
+    dst_image_path: Path,
+    bbox_xywh: List[float],
+    pad_ratio: float,
+) -> Optional[Path]:
+    if not src_image_path.exists():
+        return None
+    with Image.open(src_image_path) as im:
+        rgb = im.convert("RGB")
+        w, h = rgb.size
+        if w <= 1 or h <= 1:
+            return None
+        x1, y1, x2, y2 = _crop_box_from_bbox(bbox_xywh, w, h, pad_ratio=pad_ratio)
+        crop = rgb.crop((x1, y1, x2, y2))
+        dst_image_path.parent.mkdir(parents=True, exist_ok=True)
+        crop.save(dst_image_path)
+    return dst_image_path.resolve()
+
+
 def _default_output_paths(
     paths_cfg: Dict[str, Any],
     selected_dirs: List[Path],
@@ -234,18 +279,28 @@ def _default_output_paths(
     return out_dir / train_name, out_dir / val_name, out_dir / test_name
 
 
+def _resolve_crop_cfg(cfg: Dict[str, Any], train_out: Path) -> CropConfig:
+    crop_section = cfg.get("dial_crop", cfg.get("crop", {}))
+    enabled = bool(crop_section.get("enabled", True))
+    pad_ratio = float(crop_section.get("pad_ratio", 0.08))
+    out_root_raw = crop_section.get("out_root")
+    if out_root_raw:
+        out_root = Path(str(out_root_raw)).resolve()
+    else:
+        out_root = (train_out.parent / "crops").resolve()
+    return CropConfig(enabled=enabled, pad_ratio=pad_ratio, out_root=out_root)
+
+
 def build_pairs_from_coco(
     coco: Dict[str, Any],
     images_root: Path,
     category_name: str,
     value_key: str,
+    *,
+    split_name: str,
+    dataset_name: str,
+    crop_cfg: CropConfig,
 ) -> List[Tuple[str, float]]:
-    """
-    Делает пары (image_path, value) из Endava COCO:
-    - image_path: images_root / images[*].file_name
-    - value: берётся из annotations[*][value_key] для annotations[*].category_name == category_name
-    """
-    # image_id -> file_name
     id_to_file: Dict[int, str] = {}
     for img in coco.get("images", []):
         img_id = img.get("id")
@@ -255,39 +310,74 @@ def build_pairs_from_coco(
 
     target_category_id = _find_category_id(coco, category_name)
 
-    # collect values per image_id from target category annotations
-    values_by_img: Dict[int, List[float]] = {}
+    anns_by_img: Dict[int, List[Dict[str, Any]]] = {}
     for ann in coco.get("annotations", []):
         if not _annotation_matches_category(ann, category_name, target_category_id):
             continue
 
         img_id = ann.get("image_id")
-        v = _extract_numeric_value(ann, value_key)
+        value = _extract_numeric_value(ann, value_key)
+        bbox = ann.get("bbox")
+        if not isinstance(img_id, int):
+            continue
+        if value is None:
+            continue
+        if not (isinstance(bbox, list) and len(bbox) == 4):
+            continue
 
-        if isinstance(img_id, int) and v is not None:
-            values_by_img.setdefault(img_id, []).append(v)
+        bw = float(bbox[2])
+        bh = float(bbox[3])
+        if bw <= 0 or bh <= 0:
+            continue
+
+        anns_by_img.setdefault(img_id, []).append(
+            {
+                "value": float(value),
+                "bbox": [float(bbox[0]), float(bbox[1]), bw, bh],
+                "area": float(ann.get("area", bw * bh)),
+            }
+        )
 
     pairs: List[Tuple[str, float]] = []
     missing_target = 0
     missing_file = 0
-    ambiguous = 0
+    cropped = 0
 
     for img_id, fn in id_to_file.items():
-        vals = values_by_img.get(img_id)
-        if not vals:
+        anns = anns_by_img.get(img_id)
+        if not anns:
             missing_target += 1
             continue
 
-        v0 = vals[0]
-        if any(abs(v - v0) > 1e-6 for v in vals[1:]):
-            ambiguous += 1  # берём первый
+        ann = max(anns, key=lambda a: float(a.get("area", 0.0)))
+        value = float(ann["value"])
+        bbox = [float(v) for v in ann["bbox"]]
 
-        img_path = (images_root / fn).resolve()
+        rel = Path(fn)
+        img_path = rel if rel.is_absolute() else (images_root / rel).resolve()
         if not img_path.exists():
             missing_file += 1
             continue
 
-        pairs.append((str(img_path), float(v0)))
+        if crop_cfg.enabled:
+            rel_crop = Path(img_path.name) if rel.is_absolute() else rel
+            if rel_crop.parts and rel_crop.parts[0] in {"train", "val", "test"}:
+                rel_crop = Path(*rel_crop.parts[1:])
+            rel_crop = rel_crop.with_suffix(rel_crop.suffix or ".jpg")
+            crop_path = (crop_cfg.out_root / split_name / dataset_name / rel_crop).resolve()
+            saved = _safe_crop_save(
+                src_image_path=img_path,
+                dst_image_path=crop_path,
+                bbox_xywh=bbox,
+                pad_ratio=crop_cfg.pad_ratio,
+            )
+            if saved is None:
+                missing_file += 1
+                continue
+            pairs.append((str(saved), value))
+            cropped += 1
+        else:
+            pairs.append((str(img_path), value))
 
     if missing_target:
         print(
@@ -298,8 +388,8 @@ def build_pairs_from_coco(
             f"[WARN] {missing_file} images referenced in COCO were not found under images_root."
         )
         print(f"       images_root={images_root}")
-    if ambiguous:
-        print(f"[WARN] Ambiguous target values for {ambiguous} images (took first).")
+    if crop_cfg.enabled:
+        print(f"[INFO] Cropped samples for split='{split_name}': {cropped}")
 
     return pairs
 
@@ -308,10 +398,7 @@ def write_jsonl(pairs: List[Tuple[str, float]], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         for img_path, value in pairs:
-            f.write(
-                json.dumps({"image_path": img_path, "value": value}, ensure_ascii=False)
-                + "\n"
-            )
+            f.write(json.dumps({"image_path": img_path, "value": value}, ensure_ascii=False) + "\n")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -373,14 +460,21 @@ def main() -> None:
     else:
         _, _, test_out = _default_output_paths(paths_cfg, selected_dirs)
 
+    crop_cfg = _resolve_crop_cfg(cfg, train_out)
+    if crop_cfg.enabled and crop_cfg.out_root.exists():
+        shutil.rmtree(crop_cfg.out_root)
+    if crop_cfg.enabled:
+        crop_cfg.out_root.mkdir(parents=True, exist_ok=True)
+
     category_name = args.category_name or cfg["regression_target"]["category_name"]
     value_key = args.value_key or cfg["regression_target"]["value_key"]
 
     print(f"[INFO] raw_base:     {raw_base}")
     print(f"[INFO] selected ds: {', '.join(d.name for d in selected_dirs)}")
-    print(
-        f"[INFO] target:       category_name='{category_name}', value_key='{value_key}'"
-    )
+    print(f"[INFO] target:       category_name='{category_name}', value_key='{value_key}'")
+    print(f"[INFO] dial_crop:    enabled={crop_cfg.enabled} pad_ratio={crop_cfg.pad_ratio}")
+    if crop_cfg.enabled:
+        print(f"[INFO] crops_root:   {crop_cfg.out_root}")
     print(f"[INFO] out_train:    {train_out}")
     print(f"[INFO] out_val:      {val_out}")
     print(f"[INFO] out_test:     {test_out}")
@@ -399,24 +493,34 @@ def main() -> None:
                 "or annotations/instances_train.json / annotations/instances_val.json"
             )
         images_root = layout.images_root
-        train_coco_path = layout.train_coco
-        val_coco_path = layout.val_coco
 
         print(f"[INFO] processing:  {ds_dir}")
-        print(f"[INFO] train_coco:   {train_coco_path}")
-        print(f"[INFO] val_coco:     {val_coco_path}")
+        print(f"[INFO] train_coco:   {layout.train_coco}")
+        print(f"[INFO] val_coco:     {layout.val_coco}")
         print(f"[INFO] images_root:  {images_root}")
 
-        train_coco = _read_json(train_coco_path)
+        train_coco = _read_json(layout.train_coco)
         train_pairs = build_pairs_from_coco(
-            train_coco, images_root, category_name, value_key
+            train_coco,
+            images_root,
+            category_name,
+            value_key,
+            split_name="train",
+            dataset_name=ds_dir.name,
+            crop_cfg=crop_cfg,
         )
         all_train_pairs.extend(train_pairs)
         print(f"[OK] train pairs from {ds_dir.name}: {len(train_pairs)}")
 
-        val_coco = _read_json(val_coco_path)
+        val_coco = _read_json(layout.val_coco)
         val_pairs = build_pairs_from_coco(
-            val_coco, images_root, category_name, value_key
+            val_coco,
+            images_root,
+            category_name,
+            value_key,
+            split_name="val",
+            dataset_name=ds_dir.name,
+            crop_cfg=crop_cfg,
         )
         all_val_pairs.extend(val_pairs)
         print(f"[OK] val pairs from {ds_dir.name}:   {len(val_pairs)}")
@@ -426,7 +530,13 @@ def main() -> None:
             print(f"[INFO] test_coco:    {layout.test_coco}")
             test_coco = _read_json(layout.test_coco)
             test_pairs = build_pairs_from_coco(
-                test_coco, images_root, category_name, value_key
+                test_coco,
+                images_root,
+                category_name,
+                value_key,
+                split_name="test",
+                dataset_name=ds_dir.name,
+                crop_cfg=crop_cfg,
             )
             all_test_pairs.extend(test_pairs)
             print(f"[OK] test pairs from {ds_dir.name}:  {len(test_pairs)}")

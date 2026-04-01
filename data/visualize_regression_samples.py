@@ -10,7 +10,7 @@ from PIL import Image
 
 from utils.config import load_config
 
-N_SAMPLES = 10
+N_SAMPLES = 6
 
 
 def _parse_args() -> argparse.Namespace:
@@ -47,7 +47,7 @@ def main():
     n = min(N_SAMPLES, len(samples))
     chosen = random.sample(samples, n)
 
-    cols = 5
+    cols = 3
     rows = (n + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 3, rows * 3))
     axes = axes.flatten()

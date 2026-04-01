@@ -19,6 +19,10 @@ regression_target:
   category_name: gauge
   value_key: reading_normalized
 
+dial_crop:
+  enabled: true
+  pad_ratio: 0.08
+
 transforms:
   img_size: 256
   normalize: true

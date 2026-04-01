@@ -11,7 +11,7 @@ from PIL import Image
 
 from utils.config import load_config
 
-N_SAMPLES = 10
+N_SAMPLES = 6
 
 
 def _parse_args() -> argparse.Namespace:
@@ -42,18 +42,22 @@ def draw_keypoints(ax, kps: List[List[float]], names: List[str]) -> None:
 
 
 def draw_skeleton(ax, kps: List[List[float]], names: List[str]) -> None:
-    # Expected order: dial_max, dial_min, dial_center, dial_tip
-    # Skeleton: center -> max, center -> min, center -> tip
+    # Skeleton: center -> needle_tip, center -> scale_start, center -> scale_end.
     name_to_idx = {n: i for i, n in enumerate(names)}
 
-    required = ["dial_center", "dial_max", "dial_min", "dial_tip"]
-    if not all(n in name_to_idx for n in required):
+    if all(n in name_to_idx for n in ["center", "needle_tip", "scale_start", "scale_end"]):
+        c = name_to_idx["center"]
+        t = name_to_idx["needle_tip"]
+        s0 = name_to_idx["scale_start"]
+        s1 = name_to_idx["scale_end"]
+    elif all(n in name_to_idx for n in ["dial_center", "dial_max", "dial_min", "dial_tip"]):
+        # Backward compatibility with old naming.
+        c = name_to_idx["dial_center"]
+        t = name_to_idx["dial_tip"]
+        s0 = name_to_idx["dial_max"]
+        s1 = name_to_idx["dial_min"]
+    else:
         return
-
-    c = name_to_idx["dial_center"]
-    a = name_to_idx["dial_max"]
-    b = name_to_idx["dial_min"]
-    t = name_to_idx["dial_tip"]
 
     def line(i: int, j: int) -> None:
         x1, y1, v1 = kps[i]
@@ -62,9 +66,9 @@ def draw_skeleton(ax, kps: List[List[float]], names: List[str]) -> None:
             return
         ax.plot([x1, x2], [y1, y2], linewidth=2)
 
-    line(c, a)
-    line(c, b)
     line(c, t)
+    line(c, s0)
+    line(c, s1)
 
 
 def main() -> None:
@@ -88,7 +92,7 @@ def main() -> None:
 
     chosen = random.sample(items, k=min(N_SAMPLES, len(items)))
 
-    cols = 5
+    cols = 3
     rows = (len(chosen) + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 3.2, rows * 3.2))
     axes = axes.flatten()

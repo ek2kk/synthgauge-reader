@@ -323,6 +323,99 @@ def _build_eval_records(
     return records
 
 
+def _iter_image_files(root: Path) -> List[Path]:
+    exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    if not root.exists():
+        return []
+    return sorted(
+        [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in exts]
+    )
+
+
+def _parse_yolo_pose_label(
+    line: str,
+    img_w: float,
+    img_h: float,
+    num_keypoints: int,
+) -> Optional[Dict[str, Any]]:
+    toks = line.strip().split()
+    min_len = 1 + 4 + 3 * num_keypoints
+    if len(toks) < min_len:
+        return None
+
+    try:
+        cx = float(toks[1]) * img_w
+        cy = float(toks[2]) * img_h
+        bw = float(toks[3]) * img_w
+        bh = float(toks[4]) * img_h
+    except ValueError:
+        return None
+
+    x1 = cx - bw / 2.0
+    y1 = cy - bh / 2.0
+    x2 = cx + bw / 2.0
+    y2 = cy + bh / 2.0
+
+    keypoints: List[List[float]] = []
+    base = 5
+    for i in range(num_keypoints):
+        try:
+            kx_n = float(toks[base + 3 * i + 0])
+            ky_n = float(toks[base + 3 * i + 1])
+            kv = float(toks[base + 3 * i + 2])
+        except ValueError:
+            return None
+        keypoints.append([kx_n * img_w, ky_n * img_h, kv])
+
+    return {
+        "bbox": [x1, y1, x2, y2],
+        "keypoints": keypoints,
+    }
+
+
+def _build_eval_records_from_yolo_split(
+    cfg: Dict[str, Any],
+    split: str,
+    num_keypoints: int,
+) -> List[Dict[str, Any]]:
+    yolo_root = Path(str(cfg.get("paths", {}).get("yolo_dataset_root", ""))).resolve()
+    images_split = yolo_root / "images" / split
+    labels_split = yolo_root / "labels" / split
+    if not images_split.exists() or not labels_split.exists():
+        return []
+
+    records: List[Dict[str, Any]] = []
+    for image_path in _iter_image_files(images_split):
+        rel = image_path.relative_to(images_split).with_suffix(".txt")
+        label_path = labels_split / rel
+        if not label_path.exists():
+            continue
+
+        lines = [
+            ln.strip()
+            for ln in label_path.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        if not lines:
+            continue
+
+        with Image.open(image_path) as im:
+            w, h = im.size
+        parsed = _parse_yolo_pose_label(lines[0], float(w), float(h), num_keypoints)
+        if parsed is None:
+            continue
+
+        records.append(
+            {
+                "image_id": str(rel.with_suffix("")),
+                "image_path": str(image_path.resolve()),
+                "bbox": parsed["bbox"],
+                "keypoints": parsed["keypoints"],
+            }
+        )
+    return records
+
+
 def _extract_pose_xy(result: Any, det_idx: int) -> Optional[np.ndarray]:
     kpts = getattr(result, "keypoints", None)
     if kpts is None:
@@ -390,21 +483,27 @@ def _compute_pose_custom_metrics(
     device: str,
     score_thr: float,
 ) -> Dict[str, float]:
-    dataset_root = Path(cfg["paths"]["raw_ds_path"]).resolve()
-    coco_path = _resolve_split_coco_path(cfg, split)
-    coco = _load_json(coco_path)
-
-    category_name = str(cfg.get("dataset", {}).get("category_name", "gauge"))
     kp_cfg = cfg.get("keypoints", {})
     kp_names = [str(v) for v in kp_cfg.get("names", ["center", "needle_tip", "scale_start", "scale_end"])]
     num_keypoints = int(kp_cfg.get("num_keypoints", len(kp_names)))
 
-    records = _build_eval_records(
-        coco=coco,
-        dataset_root=dataset_root,
-        category_name=category_name,
+    records = _build_eval_records_from_yolo_split(
+        cfg=cfg,
+        split=split,
         num_keypoints=num_keypoints,
     )
+    if not records:
+        # Fallback to raw COCO if prepared YOLO split is unavailable.
+        dataset_root = Path(cfg["paths"]["raw_ds_path"]).resolve()
+        coco_path = _resolve_split_coco_path(cfg, split)
+        coco = _load_json(coco_path)
+        category_name = str(cfg.get("dataset", {}).get("category_name", "gauge"))
+        records = _build_eval_records(
+            coco=coco,
+            dataset_root=dataset_root,
+            category_name=category_name,
+            num_keypoints=num_keypoints,
+        )
 
     if not records:
         return {
@@ -532,8 +631,9 @@ def main() -> None:
     cos_lr = str(tcfg.get("lr_scheduler", "cosine")).lower() == "cosine"
     seed = int(tcfg.get("seed", 42))
     device = _resolve_yolo_device(str(tcfg.get("device", "auto")))
-    model_name = _normalize_model_name(str(mcfg.get("name", "yolov8n-pose.pt")))
+    model_name = _normalize_model_name(str(mcfg.get("name", "yolo11s-pose.pt")))
     pretrained = bool(mcfg.get("pretrained", True))
+    augment_cfg = dict(tcfg.get("augment", {}))
 
     log_path = (
         Path(paths.get("processed_ds_path", "data/processed")).resolve()
@@ -559,6 +659,28 @@ def main() -> None:
         f"epochs={epochs} batch={batch_size} imgsz={imgsz} lr0={lr0} "
         f"optimizer={optimizer} cos_lr={cos_lr} device={device}"
     )
+    if augment_cfg:
+        logger.info("augment args: " + " ".join(f"{k}={v}" for k, v in augment_cfg.items()))
+
+    train_kwargs: Dict[str, Any] = {}
+    for key in [
+        "hsv_h",
+        "hsv_s",
+        "hsv_v",
+        "degrees",
+        "translate",
+        "scale",
+        "shear",
+        "perspective",
+        "flipud",
+        "fliplr",
+        "mosaic",
+        "mixup",
+        "copy_paste",
+        "erasing",
+    ]:
+        if key in augment_cfg:
+            train_kwargs[key] = augment_cfg[key]
 
     model = YOLO(model_name)
     model.train(
@@ -577,6 +699,7 @@ def main() -> None:
         name=weights_dir.name,
         exist_ok=True,
         pretrained=pretrained,
+        **train_kwargs,
     )
 
     _copy_best_last(weights_dir)

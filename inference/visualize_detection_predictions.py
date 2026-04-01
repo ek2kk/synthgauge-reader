@@ -22,7 +22,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--config", type=str, default="configs/config_detection.yaml")
     ap.add_argument("--weights", type=str, default=None)
     ap.add_argument("--split", choices=["train", "val", "test"], default="val")
-    ap.add_argument("--num-samples", type=int, default=10)
+    ap.add_argument("--num-samples", type=int, default=6)
     ap.add_argument("--score-thr", type=float, default=None)
     ap.add_argument("--imgsz", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
@@ -265,7 +265,7 @@ def main() -> None:
     weights_path = _resolve_weights_path(cfg, args.weights)
     model = YOLO(str(weights_path))
 
-    cols = 5
+    cols = 3
     rows = (len(chosen) + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 4.0, rows * 4.0))
     axes_flat = np.array(axes, ndmin=1).reshape(-1)

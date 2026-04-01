@@ -10,9 +10,9 @@ paths:
   val_inst_coco: annotations/instances_val.json
   test_inst_coco: annotations/instances_test.json
 
-  yolo_dataset_root: data/processed/synthetic-analog-gauges_kp_yolo_pose
-  yolo_data_yaml: configs/synthgauge_kp_yolo_data.yaml
-  weights_dir_kp: models/weights/synthetic-analog-gauges/kp_yolov8n-pose
+  yolo_dataset_root: data/processed/synthetic-analog-gauges_kp_yolo_pose_crop
+  yolo_data_yaml: configs/synthgauge_kp_yolo_crop_data.yaml
+  weights_dir_kp: models/weights/synthetic-analog-gauges/kp_yolo11s-pose
 
 keypoints:
   names:
@@ -22,22 +22,39 @@ keypoints:
     - scale_end
   num_keypoints: 4
   flip_idx: [0, 1, 2, 3]
+  crop_dial: true
+  crop_pad_ratio: 0.08
 
 model:
-  name: yolov8n-pose.pt
+  name: yolo11s-pose.pt
   pretrained: true
-  imgsz: 640
+  imgsz: 960
 
 training:
   device: cuda
   epochs: 100
-  batch_size: 16
+  batch_size: 8
   num_workers: 4
   optimizer: AdamW
   lr0: 1.0e-3
   weight_decay: 1.0e-4
   lr_scheduler: cosine
   seed: 42
+  augment:
+    hsv_h: 0.005
+    hsv_s: 0.2
+    hsv_v: 0.2
+    degrees: 2.0
+    translate: 0.02
+    scale: 0.05
+    shear: 0.0
+    perspective: 0.0
+    flipud: 0.0
+    fliplr: 0.0
+    mosaic: 0.0
+    mixup: 0.0
+    copy_paste: 0.0
+    erasing: 0.0
 
 evaluation:
   split: test

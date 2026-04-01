@@ -22,7 +22,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--config", type=str, default="configs/config_keypoints.yaml")
     ap.add_argument("--weights", type=str, default=None)
     ap.add_argument("--split", choices=["train", "val", "test"], default="val")
-    ap.add_argument("--num-samples", type=int, default=10)
+    ap.add_argument("--num-samples", type=int, default=6)
     ap.add_argument("--score-thr", type=float, default=None)
     ap.add_argument("--imgsz", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
@@ -225,6 +225,91 @@ def _build_records(
     return records
 
 
+def _iter_image_files(root: Path) -> List[Path]:
+    exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+    if not root.exists():
+        return []
+    return sorted(
+        [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in exts]
+    )
+
+
+def _parse_yolo_pose_line(
+    line: str,
+    img_w: float,
+    img_h: float,
+    num_keypoints: int,
+) -> Optional[Dict[str, Any]]:
+    toks = line.strip().split()
+    min_len = 1 + 4 + 3 * num_keypoints
+    if len(toks) < min_len:
+        return None
+
+    try:
+        cx = float(toks[1]) * img_w
+        cy = float(toks[2]) * img_h
+        bw = float(toks[3]) * img_w
+        bh = float(toks[4]) * img_h
+    except ValueError:
+        return None
+
+    bbox = [cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0]
+    keypoints: List[List[float]] = []
+    base = 5
+    for i in range(num_keypoints):
+        try:
+            kx_n = float(toks[base + 3 * i + 0])
+            ky_n = float(toks[base + 3 * i + 1])
+            kv = float(toks[base + 3 * i + 2])
+        except ValueError:
+            return None
+        keypoints.append([kx_n * img_w, ky_n * img_h, kv])
+
+    return {"bbox": bbox, "keypoints": keypoints}
+
+
+def _build_records_from_yolo_split(
+    cfg: Dict[str, Any],
+    split: str,
+    num_keypoints: int,
+) -> List[Dict[str, Any]]:
+    yolo_root = Path(str(cfg.get("paths", {}).get("yolo_dataset_root", ""))).resolve()
+    images_split = yolo_root / "images" / split
+    labels_split = yolo_root / "labels" / split
+    if not images_split.exists() or not labels_split.exists():
+        return []
+
+    records: List[Dict[str, Any]] = []
+    for image_path in _iter_image_files(images_split):
+        rel = image_path.relative_to(images_split).with_suffix(".txt")
+        label_path = labels_split / rel
+        if not label_path.exists():
+            continue
+        lines = [
+            ln.strip()
+            for ln in label_path.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        if not lines:
+            continue
+
+        with Image.open(image_path) as im:
+            w, h = im.size
+        parsed = _parse_yolo_pose_line(lines[0], float(w), float(h), num_keypoints)
+        if parsed is None:
+            continue
+        records.append(
+            {
+                "image_id": str(rel.with_suffix("")),
+                "image_path": str(image_path.resolve()),
+                "bbox": parsed["bbox"],
+                "keypoints": parsed["keypoints"],
+            }
+        )
+
+    return records
+
+
 def _extract_pose_xy(result: Any, det_idx: int) -> Optional[np.ndarray]:
     kpts = getattr(result, "keypoints", None)
     if kpts is None:
@@ -323,23 +408,31 @@ def main() -> None:
     imgsz = int(args.imgsz) if args.imgsz is not None else int(mcfg.get("imgsz", 640))
     device = _resolve_device(args.device, str(tcfg.get("device", "auto")))
 
-    split_coco_path = _resolve_split_coco_path(cfg, args.split)
-    dataset_root = Path(cfg["paths"]["raw_ds_path"]).resolve()
-    coco = _load_json(split_coco_path)
-    records = _build_records(
-        coco,
-        dataset_root=dataset_root,
-        category_name=category_name,
-        num_keypoints=num_keypoints,
-    )
+    crop_mode = bool(kp_cfg.get("crop_dial", False))
+    if crop_mode:
+        records = _build_records_from_yolo_split(
+            cfg=cfg,
+            split=args.split,
+            num_keypoints=num_keypoints,
+        )
+    else:
+        split_coco_path = _resolve_split_coco_path(cfg, args.split)
+        dataset_root = Path(cfg["paths"]["raw_ds_path"]).resolve()
+        coco = _load_json(split_coco_path)
+        records = _build_records(
+            coco,
+            dataset_root=dataset_root,
+            category_name=category_name,
+            num_keypoints=num_keypoints,
+        )
     if not records:
-        raise RuntimeError(f"No records found for split={args.split} in {split_coco_path}")
+        raise RuntimeError(f"No records found for split={args.split}")
     chosen = random.sample(records, k=min(args.num_samples, len(records)))
 
     weights_path = _resolve_weights_path(cfg, args.weights)
     model = YOLO(str(weights_path))
 
-    cols = 4
+    cols = 3
     rows = (len(chosen) + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 4.5, rows * 4.5))
     axes_flat = np.array(axes, ndmin=1).reshape(-1)
@@ -378,7 +471,7 @@ def main() -> None:
         ax.axis("off")
 
     fig.suptitle(
-        f"Keypoint predictions ({args.split}, n={len(chosen)}, thr={score_thr:.2f})",
+        f"Keypoint predictions ({args.split}, n={len(chosen)}, thr={score_thr:.2f}, crop={crop_mode})",
         fontsize=14,
     )
     plt.tight_layout()

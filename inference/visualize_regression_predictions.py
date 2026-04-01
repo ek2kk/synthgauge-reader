@@ -29,7 +29,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--config", type=str, default="configs/config_regression.yaml")
     ap.add_argument("--weights", type=str, default=None)
     ap.add_argument("--split", choices=["train", "val", "test"], default="val")
-    ap.add_argument("--num-samples", type=int, default=12)
+    ap.add_argument("--num-samples", type=int, default=6)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--device", type=str, default="from-config")
     ap.add_argument("--save", type=str, default=None)
@@ -163,7 +163,7 @@ def main() -> None:
     model = _load_regression_model(cfg, weights_path=weights_path, device=device)
     transform = build_transforms(cfg, split="val")
 
-    cols = 4
+    cols = 3
     rows = (len(chosen) + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(cols * 4.5, rows * 4.5))
     axes_flat = np.array(axes, ndmin=1).reshape(-1)

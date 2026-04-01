@@ -9,6 +9,7 @@ import stat
 import shutil
 from typing import Any, Dict, Iterable, Optional
 
+from PIL import Image
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -109,12 +110,19 @@ def _ensure_images_view(dataset_root: Path, yolo_root: Path) -> None:
     shutil.copytree(src_images, dst_images, dirs_exist_ok=True)
 
 
-def _resolve_yolo_root(cfg: Dict[str, Any], dataset_root: Path) -> Path:
+def _resolve_yolo_root(
+    cfg: Dict[str, Any],
+    dataset_root: Path,
+    prepare_images_view: bool,
+) -> Path:
     yolo_root_cfg = cfg.get("paths", {}).get("yolo_dataset_root")
     if not yolo_root_cfg:
         return dataset_root
     yolo_root = Path(str(yolo_root_cfg)).resolve()
-    _ensure_images_view(dataset_root=dataset_root, yolo_root=yolo_root)
+    if prepare_images_view:
+        _ensure_images_view(dataset_root=dataset_root, yolo_root=yolo_root)
+    else:
+        yolo_root.mkdir(parents=True, exist_ok=True)
     return yolo_root
 
 
@@ -171,11 +179,70 @@ def _normalize_clamped(v: float, denom: float) -> float:
     return max(0.0, min(1.0, v / denom))
 
 
+def _select_largest_ann(anns: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not anns:
+        return None
+    if len(anns) == 1:
+        return anns[0]
+
+    def _score(ann: Dict[str, Any]) -> float:
+        area = ann.get("area")
+        if isinstance(area, (int, float)):
+            return float(area)
+        bbox = ann.get("bbox")
+        if isinstance(bbox, list) and len(bbox) == 4:
+            return float(bbox[2]) * float(bbox[3])
+        return 0.0
+
+    return max(anns, key=_score)
+
+
+def _resolve_source_image_path(dataset_root: Path, file_name: str) -> Path:
+    images_root = dataset_root / "images"
+    if images_root.exists():
+        return (images_root / file_name).resolve()
+    return (dataset_root / file_name).resolve()
+
+
+def _clip_bbox_xyxy(x1: float, y1: float, x2: float, y2: float, w: int, h: int) -> tuple[int, int, int, int]:
+    x1i = int(max(0, min(w - 1, int(x1))))
+    y1i = int(max(0, min(h - 1, int(y1))))
+    x2i = int(max(x1i + 1, min(w, int(x2))))
+    y2i = int(max(y1i + 1, min(h, int(y2))))
+    return x1i, y1i, x2i, y2i
+
+
+def _crop_box_from_bbox(
+    x: float,
+    y: float,
+    bw: float,
+    bh: float,
+    img_w: int,
+    img_h: int,
+    pad_ratio: float,
+) -> tuple[int, int, int, int]:
+    # Keep a square-ish context around the dial to preserve geometry.
+    side = max(1.0, max(bw, bh))
+    side = side * (1.0 + 2.0 * max(0.0, pad_ratio))
+    cx = x + bw / 2.0
+    cy = y + bh / 2.0
+    x1 = cx - side / 2.0
+    y1 = cy - side / 2.0
+    x2 = cx + side / 2.0
+    y2 = cy + side / 2.0
+    return _clip_bbox_xyxy(x1, y1, x2, y2, w=img_w, h=img_h)
+
+
 def _write_split_labels(
+    split_name: str,
     coco_path: Path,
+    dataset_root: Path,
+    yolo_root: Path,
     labels_root: Path,
     target_cat_id: int,
     num_keypoints: int,
+    crop_dial: bool,
+    crop_pad_ratio: float,
 ) -> tuple[int, int]:
     coco = _read_json(coco_path)
 
@@ -195,56 +262,114 @@ def _write_split_labels(
             continue
         anns_by_image[img_id].append(ann)
 
+    labels_split_root = labels_root / split_name
+    images_split_root = (yolo_root / "images" / split_name).resolve()
+
+    if labels_split_root.exists():
+        shutil.rmtree(labels_split_root)
+    if images_split_root.exists():
+        shutil.rmtree(images_split_root)
+    labels_split_root.mkdir(parents=True, exist_ok=True)
+    images_split_root.mkdir(parents=True, exist_ok=True)
+
     written_images = 0
     written_objects = 0
     for img in _iter_split_images(coco):
         img_id = int(img["id"])
-        w = float(img["width"])
-        h = float(img["height"])
-        if w <= 0 or h <= 0:
+        w0 = float(img["width"])
+        h0 = float(img["height"])
+        if w0 <= 0 or h0 <= 0:
             continue
 
-        label_rel = Path(str(img["file_name"])).with_suffix(".txt")
-        label_path = labels_root / label_rel
-        label_path.parent.mkdir(parents=True, exist_ok=True)
+        anns = anns_by_image.get(img_id, [])
+        ann = _select_largest_ann(anns)
+        if ann is None:
+            continue
 
-        lines: list[str] = []
-        for ann in anns_by_image.get(img_id, []):
-            x, y, bw, bh = [float(v) for v in ann["bbox"]]
-            if bw <= 0 or bh <= 0:
+        file_name = str(img["file_name"])
+        image_rel = Path(file_name)
+        if image_rel.parts:
+            if image_rel.parts[0] in {"train", "val", "test"}:
+                image_rel = Path(*image_rel.parts[1:])
+        image_rel = image_rel.with_suffix(image_rel.suffix or ".jpg")
+
+        label_path = (labels_split_root / image_rel).with_suffix(".txt")
+        label_path.parent.mkdir(parents=True, exist_ok=True)
+        image_out_path = (images_split_root / image_rel).resolve()
+        image_out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        x, y, bw, bh = [float(v) for v in ann["bbox"]]
+        if bw <= 0 or bh <= 0:
+            continue
+
+        if crop_dial:
+            src_image_path = _resolve_source_image_path(dataset_root, file_name)
+            if not src_image_path.exists():
+                continue
+            with Image.open(src_image_path) as im:
+                rgb = im.convert("RGB")
+                src_w, src_h = rgb.size
+                if src_w <= 1 or src_h <= 1:
+                    continue
+                crop_x1, crop_y1, crop_x2, crop_y2 = _crop_box_from_bbox(
+                    x=x,
+                    y=y,
+                    bw=bw,
+                    bh=bh,
+                    img_w=src_w,
+                    img_h=src_h,
+                    pad_ratio=crop_pad_ratio,
+                )
+                crop = rgb.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+                crop.save(image_out_path)
+
+            out_w = float(crop_x2 - crop_x1)
+            out_h = float(crop_y2 - crop_y1)
+            if out_w <= 1 or out_h <= 1:
                 continue
 
-            cx = _normalize_clamped(x + bw / 2.0, w)
-            cy = _normalize_clamped(y + bh / 2.0, h)
-            nw = _normalize_clamped(bw, w)
-            nh = _normalize_clamped(bh, h)
+            x = x - float(crop_x1)
+            y = y - float(crop_y1)
+            w = out_w
+            h = out_h
+        else:
+            src_image_path = _resolve_source_image_path(dataset_root, file_name)
+            if not src_image_path.exists():
+                continue
+            if not image_out_path.exists():
+                shutil.copy2(src_image_path, image_out_path)
+            w = w0
+            h = h0
 
-            kps = ann["keypoints"]
-            kp_tokens: list[str] = []
-            for i in range(num_keypoints):
-                kx = float(kps[3 * i + 0])
-                ky = float(kps[3 * i + 1])
-                kv = int(float(kps[3 * i + 2]))
+        cx = _normalize_clamped(x + bw / 2.0, w)
+        cy = _normalize_clamped(y + bh / 2.0, h)
+        nw = _normalize_clamped(bw, w)
+        nh = _normalize_clamped(bh, h)
 
-                if kv <= 0:
-                    kx_n = 0.0
-                    ky_n = 0.0
-                else:
-                    kx_n = _normalize_clamped(kx, w)
-                    ky_n = _normalize_clamped(ky, h)
+        kps = ann["keypoints"]
+        kp_tokens: list[str] = []
+        for i in range(num_keypoints):
+            kx = float(kps[3 * i + 0])
+            ky = float(kps[3 * i + 1])
+            kv = int(float(kps[3 * i + 2]))
 
-                kp_tokens.extend([f"{kx_n:.6f}", f"{ky_n:.6f}", str(kv)])
+            if crop_dial:
+                kx -= float(crop_x1)
+                ky -= float(crop_y1)
 
-            # Single-class pose setup: class id is always 0.
-            line = f"0 {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f} " + " ".join(kp_tokens)
-            lines.append(line)
+            if kv <= 0:
+                kx_n = 0.0
+                ky_n = 0.0
+            else:
+                kx_n = _normalize_clamped(kx, w)
+                ky_n = _normalize_clamped(ky, h)
 
-        text = "\n".join(lines)
-        if text:
-            text += "\n"
-        label_path.write_text(text, encoding="utf-8")
+            kp_tokens.extend([f"{kx_n:.6f}", f"{ky_n:.6f}", str(kv)])
+
+        line = f"0 {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f} " + " ".join(kp_tokens)
+        label_path.write_text(line + "\n", encoding="utf-8")
         written_images += 1
-        written_objects += len(lines)
+        written_objects += 1
 
     return written_images, written_objects
 
@@ -285,7 +410,6 @@ def build_from_config(
     cfg = _load_yaml(cfg_path)
 
     dataset_root = _resolve_dataset_root(cfg, str(raw_root) if raw_root else None)
-    yolo_root = _resolve_yolo_root(cfg, dataset_root)
     split_coco = _resolve_split_coco_paths(cfg, dataset_root)
 
     train_coco = _read_json(split_coco["train"])
@@ -294,6 +418,18 @@ def build_from_config(
     target_cat_id = int(target_cat["id"])
 
     keypoints_cfg = cfg.get("keypoints", {})
+    crop_dial = bool(keypoints_cfg.get("crop_dial", False))
+    crop_pad_ratio = float(keypoints_cfg.get("crop_pad_ratio", 0.05))
+    yolo_root = _resolve_yolo_root(
+        cfg,
+        dataset_root,
+        prepare_images_view=not crop_dial,
+    )
+    if yolo_root.resolve() == dataset_root.resolve():
+        raise ValueError(
+            "paths.yolo_dataset_root must point to a processed directory, "
+            "not to raw_ds_path."
+        )
     cat_keypoints = target_cat.get("keypoints", [])
     cfg_keypoints = keypoints_cfg.get("names", [])
     if isinstance(cfg_keypoints, list) and cfg_keypoints:
@@ -318,10 +454,15 @@ def build_from_config(
     split_written: Dict[str, tuple[int, int]] = {}
     for split, coco_path in split_coco.items():
         split_written[split] = _write_split_labels(
+            split_name=split,
             coco_path=coco_path,
+            dataset_root=dataset_root,
+            yolo_root=yolo_root,
             labels_root=labels_root,
             target_cat_id=target_cat_id,
             num_keypoints=num_keypoints,
+            crop_dial=crop_dial,
+            crop_pad_ratio=crop_pad_ratio,
         )
 
     cfg_out_yaml = cfg.get("paths", {}).get(
@@ -344,6 +485,7 @@ def build_from_config(
     print(f"[OK] dataset_root: {dataset_root}")
     if yolo_root != dataset_root:
         print(f"[OK] yolo_root:    {yolo_root}")
+    print(f"[OK] crop_dial:    {crop_dial} (pad_ratio={crop_pad_ratio:.3f})")
     print(f"[OK] labels_root:  {labels_root}")
     for split in ["train", "val", "test"]:
         if split in split_written:
