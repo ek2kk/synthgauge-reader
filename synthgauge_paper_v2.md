@@ -1,4 +1,4 @@
-﻿# SynthGauge: A Large-Scale Synthetic Dataset for Analog Gauge Reading with Domain Randomization
+# SynthGauge: A Large-Scale Synthetic Dataset for Analog Gauge Reading with Domain Randomization
 
 ---
 
@@ -10,11 +10,11 @@ Automatic reading of analog gauges is essential for industrial monitoring, yet t
 
 ## 1. Introduction
 
-Analog gaugesвЂ”pressure meters, voltmeters, ammeters, thermometers, and tachometersвЂ”remain prevalent in industrial facilities worldwide. Manual reading of these instruments is labor-intensive, error-prone, and potentially hazardous in hostile environments. Automated gauge reading through computer vision can enable continuous monitoring, reduce human exposure to dangerous conditions, and eliminate transcription errors.
+Analog gauges - pressure meters, voltmeters, ammeters, thermometers, and tachometers - remain prevalent in industrial facilities worldwide. Manual reading of these instruments is labor-intensive, error-prone, and potentially hazardous in hostile environments. Automated gauge reading through computer vision can enable continuous monitoring, reduce human exposure to dangerous conditions, and eliminate transcription errors.
 
 Deep learning has achieved remarkable success in related tasks such as optical character recognition and object detection. However, applying these methods to analog gauge reading faces a fundamental obstacle: the lack of large-scale annotated datasets. Existing public datasets contain at most a few thousand images with limited diversity in instrument types and imaging conditions. Collecting real images requires physical access to operational equipment, while annotation demands expertise to correctly identify needle positions and scale parameters.
 
-Synthetic data generation offers a solution to this scarcity. Procedural generation with Domain Randomization (DR) can produce unlimited labeled samples at negligible marginal cost. By randomizing visual parameters during renderingвЂ”lighting, textures, camera pose, materialsвЂ”the resulting models learn features robust to any specific appearance, including real-world conditions.
+Synthetic data generation offers a solution to this scarcity. Procedural generation with Domain Randomization (DR) can produce unlimited labeled samples at negligible marginal cost. By randomizing visual parameters during rendering - lighting, textures, camera pose, materials - the resulting models learn features robust to any specific appearance, including real-world conditions.
 
 In this work, we introduce **SynthGauge**, a procedurally generated dataset designed for gauge detection, keypoint localization, and reading estimation. Our contributions are:
 
@@ -30,7 +30,7 @@ In this work, we introduce **SynthGauge**, a procedurally generated dataset desi
 
 **[FIGURE 1 - TEASER IMAGE HERE]**
 
-**Figure 1.** Sample images from SynthGauge showing diversity of instrument types and imaging conditions. From left to right: manometer with color zones (0вЂ“150 bar), tachometer (0вЂ“8000 RPM), compound pressure gauge (в€’15 to +60 PSI), thermometer (0вЂ“250В°C), tachometer with safety zones (0вЂ“6000 RPM). All images generated procedurally with Domain Randomization.
+**Figure 1.** Sample images from SynthGauge showing diversity of instrument types and imaging conditions. From left to right: manometer with color zones (0–150 bar), tachometer (0–8000 RPM), compound pressure gauge (−15 to +60 PSI), thermometer (0–250°C), tachometer with safety zones (0–6000 RPM). All images generated procedurally with Domain Randomization.
 
 ---
 
@@ -69,7 +69,7 @@ SynthGauge supports three computer vision tasks: (1) gauge face detection via bo
 
 Figure 2 illustrates the generation architecture comprising six components:
 
-**Configuration.** YAML files define 97 DR parameter ranges and 42 scale configurations covering manometers (bar, kPa, PSI), voltmeters, ammeters, thermometers (В°C), tachometers (RPM), speedometers (km/h), and specialized instruments (vacuum, compound, differential pressure gauges).
+**Configuration.** YAML files define 97 DR parameter ranges and 42 scale configurations covering manometers (bar, kPa, PSI), voltmeters, ammeters, thermometers (°C), tachometers (RPM), speedometers (km/h), and specialized instruments (vacuum, compound, differential pressure gauges).
 
 **Domain Randomization.** For each image, parameters are sampled from configured distributions across seven groups: lighting, camera, materials, geometry, weathering, post-processing, and position.
 
@@ -77,11 +77,11 @@ Figure 2 illustrates the generation architecture comprising six components:
 
 **Scene Setup.** Camera pose, lighting sources (point, sun, area, IES profiles), and HDRI environment maps selected from 484 industrial backgrounds (Poly Haven, CC0).
 
-**Rendering.** Blender Cycles path tracer at 128 samples produces photorealistic output at 640Г—640 pixels.
+**Rendering.** Blender Cycles path tracer at 128 samples produces photorealistic output at 640×640 pixels.
 
 **Post-processing.** Camera simulation effects including film grain, Gaussian blur, vignette, chromatic aberration, barrel distortion, bloom, and JPEG compression.
 
-**Annotation.** COCO JSON with bounding boxes and custom fields: `reading_normalized` в€€ [0,1], `needle_angle_cw_deg`, scale parameters, and complete DR metadata per image.
+**Annotation.** COCO JSON with bounding boxes and custom fields: `reading_normalized` ∈ [0,1], `needle_angle_cw_deg`, scale parameters, and complete DR metadata per image.
 
 ---
 
@@ -99,23 +99,23 @@ We randomize 97 parameters across seven groups. Table 2 summarizes key parameter
 
 | Group | Params | Key Ranges |
 |-------|--------|------------|
-| Lighting | 9 | 2вЂ“4 sources, 2700вЂ“6500K, 484 HDRIs, IES profiles (30%), dim mode (5%) |
-| Camera | 6 | 35вЂ“85mm focal, 0.4вЂ“0.55m distance, В±15В° tilt/azimuth |
+| Lighting | 9 | 2–4 sources, 2700–6500K, 484 HDRIs, IES profiles (30%), dim mode (5%) |
+| Camera | 6 | 35–85mm focal, 0.4–0.55m distance, ±15° tilt/azimuth |
 | Materials | 18 | 11 housing materials, 4 needle shapes, 8 colors, glass types |
-| Geometry | 6 | 42 scale configs, 0вЂ“270В° needle angle, body shapes |
+| Geometry | 6 | 42 scale configs, 0–270° needle angle, body shapes |
 | Weathering | 4 | Edge wear, scratches, oil stains, glass smudges |
 | Post-process | 12 | Noise, JPEG, blur, vignette, chromatic aberration, barrel distortion |
 | Position | 2 | 30% off-center, up to 25% offset |
 
-**Lighting** encompasses 2вЂ“4 sources with randomized type, intensity (1.1вЂ“1.25), and color temperature (2700вЂ“6500K). A dim lighting mode (5% of images) simulates poorly-lit industrial environments. Industrial IES luminaire profiles (30% of images) add realistic factory lighting patterns. HDRI environment maps provide contextual reflections and backgrounds.
+**Lighting** encompasses 2–4 sources with randomized type, intensity (1.1–1.25), and color temperature (2700–6500K). A dim lighting mode (5% of images) simulates poorly-lit industrial environments. Industrial IES luminaire profiles (30% of images) add realistic factory lighting patterns. HDRI environment maps provide contextual reflections and backgrounds.
 
 **Materials** define visual appearance of gauge components. Housing materials include stainless steel variants, plastics, aluminum, brass, and rusty metal with procedural roughness. Glass covers are clean (70%) or scratched (30%). Needle shapes follow industrial standards: knife (70%), lollipop (15%), line (10%), spade (5%).
 
-**Geometry** encompasses 42 scale configurations spanning pressure (bar, kPa, PSI), electrical (V, A), temperature (В°C), and speed (RPM, km/h) measurements. Sweep angles range from 90В° to 320В°; most use 270В° clockwise with counter-clockwise variants. Color zones (35%) and dual scales (15%) add visual diversity.
+**Geometry** encompasses 42 scale configurations spanning pressure (bar, kPa, PSI), electrical (V, A), temperature (°C), and speed (RPM, km/h) measurements. Sweep angles range from 90° to 320°; most use 270° clockwise with counter-clockwise variants. Color zones (35%) and dual scales (15%) add visual diversity.
 
 **Weathering** applies procedural aging via shader nodes: edge wear revealing bare metal, surface scratches, oil stains, and glass fingerprints simulate real industrial equipment in service.
 
-**Post-processing** simulates camera characteristics: film grain (ISO 200вЂ“1600 equivalent), JPEG compression (quality 60вЂ“95), blur, vignette, chromatic aberration, and barrel distortion (40% of images).
+**Post-processing** simulates camera characteristics: film grain (ISO 200–1600 equivalent), JPEG compression (quality 60–95), blur, vignette, chromatic aberration, and barrel distortion (40% of images).
 
 ---
 
@@ -157,11 +157,11 @@ Per-image metadata records all 97 DR parameter values, enabling fine-grained abl
 
 ### 3.4 Dataset Statistics
 
-SynthGauge contains 9,000 images split 7,000/1,000/1,000 for train/val/test. All images are 640Г—640 JPEG.
+SynthGauge contains 9,000 images split 7,000/1,000/1,000 for train/val/test. All images are 640×640 JPEG.
 
 **Instrument distribution:** Manometers 34%, voltmeters 30%, ammeters 30%, thermometers 2.5%, tachometers 1.5%, speedometers 1%, other 1%.
 
-**Bounding box statistics:** Mean width 445px, mean height 449px, gauge coverage 55вЂ“75% of frame.
+**Bounding box statistics:** Mean width 445px, mean height 449px, gauge coverage 55–75% of frame.
 
 **Reading distribution:** Mean 0.50, range [0.02, 0.98], approximately uniform.
 
@@ -169,7 +169,7 @@ SynthGauge contains 9,000 images split 7,000/1,000/1,000 for train/val/test. All
 
 **[FIGURE 4 - DR VARIATIONS HERE: figure3_dr_variations.jpg]**
 
-**Figure 4.** Examples showing Domain Randomization effects. Different dial colors (cream, white, dark), lighting conditions, backgrounds, and units (Р±Р°СЂ/bar, РѕР±/РјРёРЅ/RPM, РєРџР°/kPa) demonstrate the visual diversity achieved through procedural generation.
+**Figure 4.** Examples showing Domain Randomization effects. Different dial colors (cream, white, dark), lighting conditions, backgrounds, and units (bar, RPM, kPa) demonstrate the visual diversity achieved through procedural generation.
 
 ---
 
@@ -284,7 +284,7 @@ We introduced SynthGauge, a synthetic dataset of 9,000 analog gauge images with 
 
 [4] OpenAI. "Learning Dexterous In-Hand Manipulation." IJRR, 2020.
 
-[5] D. HorvГЎth et al. "Object Detection Using Sim2Real Domain Randomization for Robotic Applications." IEEE T-RO, 2022.
+[5] D. Horvath et al. "Object Detection Using Sim2Real Domain Randomization for Robotic Applications." IEEE T-RO, 2022.
 
 [6] M. Elsisi et al. "Domain Randomization for Object Detection in Manufacturing Applications." IEEE Access, 2024.
 
@@ -309,4 +309,3 @@ We introduced SynthGauge, a synthetic dataset of 9,000 analog gauge images with 
 ---
 
 *Generated with Blender 4.2.1 LTS on NVIDIA RTX 3060. Total generation time: ~12.5 hours for 9,000 images.*
-
