@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import math
-import re
-import shutil
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
-import torch
 from ultralytics import YOLO
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +16,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from utils.config import load_config
+from utils.runtime import (
+    copy_best_last_weights,
+    normalize_model_name,
+    resolve_task_weights_dir,
+    resolve_yolo_device,
+    setup_logger,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -36,77 +39,11 @@ def _parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def _setup_logger(log_path: Optional[Path] = None) -> logging.Logger:
-    logger = logging.getLogger("train_keypoints_yolo_pose")
-    logger.setLevel(logging.INFO)
-    if logger.handlers:
-        return logger
-
-    fmt = logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s")
-    sh = logging.StreamHandler()
-    sh.setFormatter(fmt)
-    logger.addHandler(sh)
-
-    if log_path is not None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_path, encoding="utf-8")
-        fh.setFormatter(fmt)
-        logger.addHandler(fh)
-
-    return logger
-
-
-def _resolve_yolo_device(mode: str) -> str:
-    m = str(mode).lower()
-    if m == "cpu":
-        return "cpu"
-    if m == "cuda":
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA requested but unavailable.")
-        return "0"
-    if m == "auto":
-        return "0" if torch.cuda.is_available() else "cpu"
-    return mode
-
-
-def _normalize_model_name(model_name: str) -> str:
-    name = model_name.strip()
-    if name.endswith(".pt"):
-        return name
-    return f"{name}.pt"
-
-
-def _model_tag(model_name: str) -> str:
-    stem = Path(model_name).stem.lower()
-    tag = re.sub(r"[^a-z0-9._-]+", "-", stem).strip("-")
-    return tag or "model"
-
-
-def _dataset_name(cfg: Dict[str, Any]) -> str:
-    dataset_cfg = cfg.get("dataset", {})
-    explicit = dataset_cfg.get("name")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-    raw_ds = str(cfg.get("paths", {}).get("raw_ds_path", "dataset")).rstrip("/\\")
-    return Path(raw_ds).name or "dataset"
-
-
-def _resolve_weights_dir(cfg: Dict[str, Any], model_name: str) -> Path:
-    paths = cfg.get("paths", {})
-    explicit = paths.get("weights_dir_kp")
-    if explicit:
-        return Path(str(explicit)).resolve()
-
-    dataset_name = _dataset_name(cfg)
-    model_name_tag = _model_tag(model_name)
-    return (Path("models/weights").resolve() / dataset_name / f"kp_{model_name_tag}")
-
-
 def _ensure_data_yaml(
     cfg: Dict[str, Any],
     config_path: Path,
     prepare_data: bool,
-    logger: logging.Logger,
+    logger,
 ) -> Path:
     data_yaml = Path(cfg["paths"]["yolo_data_yaml"]).resolve()
     if data_yaml.exists() and not prepare_data:
@@ -119,16 +56,6 @@ def _ensure_data_yaml(
     if not produced_yaml.exists():
         raise FileNotFoundError(f"YOLO pose data yaml was not created: {data_yaml}")
     return produced_yaml
-
-
-def _copy_best_last(weights_dir: Path) -> None:
-    nested = weights_dir / "weights"
-    if not nested.exists():
-        return
-    for fname in ["best.pt", "last.pt"]:
-        src = nested / fname
-        if src.exists():
-            shutil.copy2(src, weights_dir / fname)
 
 
 def _extract_pose_metrics(val_result: Any) -> Dict[str, float]:
@@ -630,8 +557,8 @@ def main() -> None:
     optimizer = str(tcfg.get("optimizer", "AdamW"))
     cos_lr = str(tcfg.get("lr_scheduler", "cosine")).lower() == "cosine"
     seed = int(tcfg.get("seed", 42))
-    device = _resolve_yolo_device(str(tcfg.get("device", "auto")))
-    model_name = _normalize_model_name(str(mcfg.get("name", "yolo11s-pose.pt")))
+    device = resolve_yolo_device(str(tcfg.get("device", "auto")))
+    model_name = normalize_model_name(str(mcfg.get("name", "yolo11s-pose.pt")))
     pretrained = bool(mcfg.get("pretrained", True))
     augment_cfg = dict(tcfg.get("augment", {}))
 
@@ -639,7 +566,7 @@ def main() -> None:
         Path(paths.get("processed_ds_path", "data/processed")).resolve()
         / "train_keypoints_yolo_pose.log"
     )
-    logger = _setup_logger(log_path)
+    logger = setup_logger("train_keypoints_yolo_pose", log_path)
 
     prepare_data = True
     if args.no_prepare_data:
@@ -648,7 +575,12 @@ def main() -> None:
         prepare_data = True
     data_yaml = _ensure_data_yaml(cfg, cfg_path, prepare_data=prepare_data, logger=logger)
 
-    weights_dir = _resolve_weights_dir(cfg, model_name=model_name)
+    weights_dir = resolve_task_weights_dir(
+        cfg,
+        weights_key="weights_dir_kp",
+        task_prefix="kp",
+        model_identifier=model_name,
+    )
     weights_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"model={model_name}")
@@ -702,7 +634,7 @@ def main() -> None:
         **train_kwargs,
     )
 
-    _copy_best_last(weights_dir)
+    copy_best_last_weights(weights_dir)
     logger.info("Training finished.")
 
     eval_cfg = cfg.get("evaluation", {})

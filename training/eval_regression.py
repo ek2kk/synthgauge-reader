@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
-import random
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -19,14 +16,17 @@ if str(PROJECT_ROOT) not in sys.path:
 from data.datasets import GaugeValueDataset
 from data.transforms import build_transforms
 from models.model import GaugeRegressor, ModelConfig
-from training.train_regression import (
-    _get_device,
-    _log_device_info,
-    _resolve_weights_dir,
-    evaluate,
-)
+from training.train_regression import evaluate
 from utils.config import load_config
 from utils.metrics import format_metrics
+from utils.runtime import (
+    find_weights_path,
+    log_torch_device_info,
+    resolve_task_weights_dir,
+    resolve_torch_device,
+    set_seed,
+    setup_logger,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -40,34 +40,6 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--tol", type=float, default=None)
     ap.add_argument("--out", type=str, default=None)
     return ap.parse_args()
-
-
-def _setup_logger(log_path: Optional[Path] = None) -> logging.Logger:
-    logger = logging.getLogger("eval_regression")
-    logger.setLevel(logging.INFO)
-    if logger.handlers:
-        return logger
-
-    fmt = logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s")
-    sh = logging.StreamHandler()
-    sh.setFormatter(fmt)
-    logger.addHandler(sh)
-
-    if log_path is not None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_path, encoding="utf-8")
-        fh.setFormatter(fmt)
-        logger.addHandler(fh)
-
-    return logger
-
-
-def _set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True
 
 
 def _resolve_split_index(paths: Dict[str, Any], split: str) -> Path:
@@ -103,20 +75,17 @@ def _resolve_split_index(paths: Dict[str, Any], split: str) -> Path:
 
 
 def _resolve_weights_path(cfg: Dict[str, Any], explicit: Optional[str]) -> Path:
-    if explicit:
-        p = Path(explicit).resolve()
-        if not p.exists():
-            raise FileNotFoundError(f"Weights file not found: {p}")
-        return p
-
-    weights_dir = _resolve_weights_dir(cfg)
-    candidates = [weights_dir / "best.pt", weights_dir / "last.pt"]
-    for p in candidates:
-        if p.exists():
-            return p.resolve()
-
-    raise FileNotFoundError(
-        "No regression weights found. Checked: " + ", ".join(str(p) for p in candidates)
+    model_identifier = str(cfg.get("model", {}).get("backbone", "resnet18")).lower()
+    weights_dir = resolve_task_weights_dir(
+        cfg,
+        weights_key="weights_dir_reg",
+        task_prefix="reg",
+        model_identifier=model_identifier,
+    )
+    return find_weights_path(
+        explicit_path=explicit,
+        weights_dir=weights_dir,
+        include_nested_weights_dir=False,
     )
 
 
@@ -153,15 +122,15 @@ def main() -> None:
     batch_size = int(args.batch_size or tcfg.get("batch_size", 32))
     num_workers = int(args.num_workers or tcfg.get("num_workers", 4))
     seed = int(tcfg.get("seed", 42))
-    _set_seed(seed)
+    set_seed(seed)
 
     processed_root = Path(paths.get("processed_ds_path", "data/processed")).resolve()
     log_path = processed_root / "eval_regression.log"
-    logger = _setup_logger(log_path)
+    logger = setup_logger("eval_regression", log_path)
 
     device_cfg = args.device or tcfg.get("device", "auto")
-    device = _get_device(device_cfg, logger=logger)
-    _log_device_info(logger, device)
+    device = resolve_torch_device(device_cfg, logger=logger)
+    log_torch_device_info(logger, device)
 
     amp_cfg = bool(tcfg.get("amp", True))
     amp = amp_cfg and device.type == "cuda"
@@ -212,4 +181,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

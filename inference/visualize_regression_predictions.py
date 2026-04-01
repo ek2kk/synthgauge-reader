@@ -20,6 +20,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from data.transforms import build_transforms
 from models.model import GaugeRegressor, ModelConfig
 from utils.config import load_config
+from utils.runtime import (
+    find_weights_path,
+    resolve_task_weights_dir,
+    resolve_torch_device,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -38,56 +43,21 @@ def _parse_args() -> argparse.Namespace:
 
 def _resolve_device(requested: str, cfg_device: str) -> torch.device:
     mode = cfg_device if requested == "from-config" else requested
-    mode = str(mode).lower()
-    if mode == "cpu":
-        return torch.device("cpu")
-    if mode == "cuda":
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA requested but unavailable.")
-        return torch.device("cuda")
-    if mode == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if mode == "mps":
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return torch.device("mps")
-        return torch.device("cpu")
-    return torch.device(mode)
-
-
-def _dataset_name(cfg: Dict[str, Any]) -> str:
-    dataset_cfg = cfg.get("dataset", {})
-    explicit = dataset_cfg.get("name")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-    raw_ds = str(cfg.get("paths", {}).get("raw_ds_path", "dataset")).rstrip("/\\")
-    return Path(raw_ds).name or "dataset"
-
-
-def _resolve_weights_dir(cfg: Dict[str, Any]) -> Path:
-    paths = cfg.get("paths", {})
-    explicit = paths.get("weights_dir_reg")
-    if explicit:
-        return Path(str(explicit)).resolve()
-
-    dataset_name = _dataset_name(cfg)
-    model_name = str(cfg.get("model", {}).get("backbone", "resnet18")).lower()
-    return Path("models/weights").resolve() / dataset_name / f"reg_{model_name}"
+    return resolve_torch_device(str(mode))
 
 
 def _resolve_weights_path(cfg: Dict[str, Any], weights_arg: Optional[str]) -> Path:
-    if weights_arg:
-        p = Path(weights_arg).resolve()
-        if not p.exists():
-            raise FileNotFoundError(f"Weights not found: {p}")
-        return p
-
-    weights_dir = _resolve_weights_dir(cfg)
-    candidates = [weights_dir / "best.pt", weights_dir / "last.pt"]
-    for p in candidates:
-        if p.exists():
-            return p
-    raise FileNotFoundError(
-        f"No regression weights found under {weights_dir} (expected best.pt or last.pt)."
+    model_identifier = str(cfg.get("model", {}).get("backbone", "resnet18")).lower()
+    weights_dir = resolve_task_weights_dir(
+        cfg,
+        weights_key="weights_dir_reg",
+        task_prefix="reg",
+        model_identifier=model_identifier,
+    )
+    return find_weights_path(
+        explicit_path=weights_arg,
+        weights_dir=weights_dir,
+        include_nested_weights_dir=False,
     )
 
 

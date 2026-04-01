@@ -9,7 +9,7 @@ Always run scripts from the repository root via `uv run`.
 ## Tasks
 
 - Detection: YOLOv8n (`configs/config_detection.yaml`)
-- Keypoint detection: YOLOv8n-pose (`configs/config_keypoints.yaml`)
+- Keypoint detection: YOLO11s-pose (`configs/config_keypoints.yaml`)
 - Regression: ResNet-18 (`configs/config_regression.yaml`)
 
 ## Metrics
@@ -23,7 +23,7 @@ Always run scripts from the repository root via `uv run`.
 Regression index (JSONL):
 
 ```powershell
-uv run .\data\build_regression_from_coco.py --raw-root data/raw --dataset synthetic-analog-gauges --category-name gauge --value-key reading_normalized
+uv run .\data\build_regression_from_coco.py --raw-root data/raw/synthetic-analog-gauges --category-name gauge --value-key reading_normalized
 ```
 
 Detection labels/data yaml (YOLO bbox):
@@ -48,7 +48,7 @@ YOLOv8n detection:
 uv run .\training\train_detection_yolo.py --config configs/config_detection.yaml
 ```
 
-YOLOv8n-pose keypoint detection:
+YOLO11s-pose keypoint detection:
 
 ```powershell
 uv run .\training\train_keypoints_yolo_pose.py --config configs/config_keypoints.yaml
@@ -78,7 +78,7 @@ Example:
 
 ```powershell
 models/weights/synthetic-analog-gauges/det_yolov8n
-models/weights/synthetic-analog-gauges/kp_yolov8n-pose
+models/weights/synthetic-analog-gauges/kp_yolo11s-pose
 models/weights/synthetic-analog-gauges/reg_resnet18
 ```
 
@@ -136,4 +136,22 @@ Regression (pred value vs gt):
 
 ```powershell
 uv run .\inference\visualize_regression_predictions.py --config configs/config_regression.yaml --split val --num-samples 12 --save data/processed/reg_pred_samples.png
+```
+
+## 5) Unified Predict
+
+Single image:
+
+```powershell
+uv run .\inference\predict.py --task detection --image path\to\image.jpg
+uv run .\inference\predict.py --task keypoints --image path\to\image.jpg
+uv run .\inference\predict.py --task regression --image path\to\image.jpg
+```
+
+Dataset sample:
+
+```powershell
+uv run .\inference\predict.py --task detection --split val --num-samples 10 --out data/processed/pred_det_val.json
+uv run .\inference\predict.py --task keypoints --split val --num-samples 10 --out data/processed/pred_kp_val.json
+uv run .\inference\predict.py --task regression --split val --num-samples 10 --out data/processed/pred_reg_val.json
 ```

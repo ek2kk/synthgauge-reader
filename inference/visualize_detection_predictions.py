@@ -3,16 +3,27 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 from matplotlib.patches import Rectangle
 from PIL import Image
 from ultralytics import YOLO
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from utils.config import load_config
+from utils.runtime import (
+    find_weights_path,
+    normalize_model_name,
+    resolve_task_weights_dir,
+    resolve_yolo_device,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -38,68 +49,21 @@ def _load_json(path: Path) -> Dict[str, Any]:
 
 def _resolve_device(requested: str, cfg_device: str) -> str:
     mode = cfg_device if requested == "from-config" else requested
-    mode = str(mode).lower()
-    if mode == "auto":
-        return "0" if torch.cuda.is_available() else "cpu"
-    if mode == "cuda":
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA requested but unavailable.")
-        return "0"
-    if mode == "cpu":
-        return "cpu"
-    return mode
-
-
-def _model_tag(model_name: str) -> str:
-    stem = Path(model_name).stem.lower()
-    tag = re.sub(r"[^a-z0-9._-]+", "-", stem).strip("-")
-    return tag or "model"
-
-
-def _dataset_name(cfg: Dict[str, Any]) -> str:
-    dataset_cfg = cfg.get("dataset", {})
-    explicit = dataset_cfg.get("name")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-    raw_ds = str(cfg.get("paths", {}).get("raw_ds_path", "dataset")).rstrip("/\\")
-    return Path(raw_ds).name or "dataset"
-
-
-def _resolve_weights_dir(cfg: Dict[str, Any]) -> Path:
-    paths = cfg.get("paths", {})
-    explicit = paths.get("weights_dir_det")
-    if explicit:
-        return Path(str(explicit)).resolve()
-
-    dataset_name = _dataset_name(cfg)
-    model_name = str(cfg.get("model", {}).get("name", "yolov8n.pt"))
-    return (
-        Path("models/weights").resolve()
-        / dataset_name
-        / f"det_{_model_tag(model_name)}"
-    )
+    return resolve_yolo_device(str(mode))
 
 
 def _resolve_weights_path(cfg: Dict[str, Any], weights_arg: Optional[str]) -> Path:
-    if weights_arg:
-        p = Path(weights_arg).resolve()
-        if not p.exists():
-            raise FileNotFoundError(f"Weights not found: {p}")
-        return p
-
-    weights_dir = _resolve_weights_dir(cfg)
-    candidates = [
-        weights_dir / "best.pt",
-        weights_dir / "last.pt",
-        weights_dir / "weights" / "best.pt",
-        weights_dir / "weights" / "last.pt",
-    ]
-    for p in candidates:
-        if p.exists():
-            return p
-
-    raise FileNotFoundError(
-        f"No weights found under {weights_dir} (expected best.pt or last.pt)."
+    model_name = normalize_model_name(str(cfg.get("model", {}).get("name", "yolov8n.pt")))
+    weights_dir = resolve_task_weights_dir(
+        cfg,
+        weights_key="weights_dir_det",
+        task_prefix="det",
+        model_identifier=model_name,
+    )
+    return find_weights_path(
+        explicit_path=weights_arg,
+        weights_dir=weights_dir,
+        include_nested_weights_dir=True,
     )
 
 
@@ -237,10 +201,7 @@ def main() -> None:
     random.seed(args.seed)
 
     cfg_path = Path(args.config).resolve()
-    with cfg_path.open("r", encoding="utf-8") as f:
-        import yaml
-
-        cfg = yaml.safe_load(f)
+    cfg = load_config(cfg_path)
 
     tcfg = cfg.get("training", {})
     mcfg = cfg.get("model", {})

@@ -466,7 +466,7 @@ def build_from_config(
         )
 
     cfg_out_yaml = cfg.get("paths", {}).get(
-        "yolo_data_yaml", "configs/synthgauge_kp_yolo_data.yaml"
+        "yolo_data_yaml", "configs/synthgauge_kp_yolo_crop_data.yaml"
     )
     out_yaml_path = (
         Path(out_yaml).resolve()

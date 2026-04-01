@@ -15,7 +15,7 @@ def _parse_args() -> tuple[argparse.Namespace, list[str]]:
     ap.add_argument(
         "--task",
         required=True,
-        choices=["detection", "keypoints", "regression", "det_yolo", "det_kp"],
+        choices=["detection", "keypoints", "regression"],
         help="Evaluation pipeline to run.",
     )
     ap.add_argument(
@@ -33,7 +33,7 @@ def _task_defaults(task: str) -> tuple[Path, Path]:
             PROJECT_ROOT / "training" / "eval_regression.py",
             PROJECT_ROOT / "configs" / "config_regression.yaml",
         )
-    if task in ("keypoints", "det_kp"):
+    if task == "keypoints":
         return (
             PROJECT_ROOT / "training" / "eval_keypoints_yolo_pose.py",
             PROJECT_ROOT / "configs" / "config_keypoints.yaml",
@@ -67,4 +67,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

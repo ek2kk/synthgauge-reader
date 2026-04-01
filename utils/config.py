@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 
 
-def load_config(path: str | Path = "configs/config.yaml") -> dict:
+def load_config(path: str | Path) -> dict:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Config not found: {path.resolve()}")

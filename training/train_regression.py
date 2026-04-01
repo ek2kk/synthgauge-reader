@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import logging
-import random
 from pathlib import Path
 import sys
 from typing import Any, Dict, Optional
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -21,6 +18,13 @@ from data.transforms import build_transforms
 from models.model import GaugeRegressor, ModelConfig
 from utils.config import load_config
 from utils.metrics import RegressionMeter, format_metrics
+from utils.runtime import (
+    log_torch_device_info,
+    resolve_task_weights_dir,
+    resolve_torch_device,
+    set_seed,
+    setup_logger,
+)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -33,74 +37,6 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--weight-decay", type=float, default=None)
     ap.add_argument("--max-train-steps", type=int, default=None)
     return ap.parse_args()
-
-
-def _setup_logger(log_path: Optional[Path] = None) -> logging.Logger:
-    logger = logging.getLogger("train_regression")
-    logger.setLevel(logging.INFO)
-    if logger.handlers:
-        return logger
-
-    fmt = logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s")
-    sh = logging.StreamHandler()
-    sh.setFormatter(fmt)
-    logger.addHandler(sh)
-
-    if log_path is not None:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_path, encoding="utf-8")
-        fh.setFormatter(fmt)
-        logger.addHandler(fh)
-
-    return logger
-
-
-def _set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True
-
-
-def _get_device(device_cfg: str, logger: logging.Logger) -> torch.device:
-    mode = str(device_cfg).lower()
-
-    if mode == "cpu":
-        return torch.device("cpu")
-    if mode == "cuda":
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA requested but unavailable.")
-        return torch.device("cuda")
-    if mode == "mps":
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return torch.device("mps")
-        logger.warning("MPS requested but unavailable; fallback to CPU.")
-        return torch.device("cpu")
-
-    # auto: cuda -> mps -> cpu
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
-def _log_device_info(logger: logging.Logger, device: torch.device) -> None:
-    if device.type != "cuda":
-        logger.warning(f"Training is running on {device.type}, not CUDA.")
-        return
-
-    idx = torch.cuda.current_device()
-    props = torch.cuda.get_device_properties(idx)
-    total_mem_gb = props.total_memory / (1024**3)
-    logger.info(
-        "cuda_device="
-        f"index={idx} "
-        f"name={torch.cuda.get_device_name(idx)} "
-        f"capability={props.major}.{props.minor} "
-        f"vram={total_mem_gb:.2f}GB"
-    )
 
 
 def _build_loss(tcfg: Dict[str, Any]) -> nn.Module:
@@ -172,27 +108,6 @@ def _resolve_path(paths: Dict[str, Any], primary: str, *fallbacks: str) -> Path:
     raise KeyError(f"Missing path key in config: {primary}")
 
 
-def _dataset_name(cfg: Dict[str, Any]) -> str:
-    dataset_cfg = cfg.get("dataset", {})
-    explicit = dataset_cfg.get("name")
-    if isinstance(explicit, str) and explicit.strip():
-        return explicit.strip()
-
-    raw_ds = str(cfg.get("paths", {}).get("raw_ds_path", "dataset")).rstrip("/\\")
-    return Path(raw_ds).name or "dataset"
-
-
-def _resolve_weights_dir(cfg: Dict[str, Any]) -> Path:
-    paths = cfg.get("paths", {})
-    explicit = paths.get("weights_dir_reg")
-    if explicit:
-        return Path(str(explicit)).resolve()
-
-    dataset_name = _dataset_name(cfg)
-    model_name = str(cfg.get("model", {}).get("backbone", "resnet18")).lower()
-    return Path("models/weights").resolve() / dataset_name / f"reg_{model_name}"
-
-
 def main() -> None:
     args = _parse_args()
     cfg = load_config(args.config)
@@ -214,15 +129,15 @@ def main() -> None:
         Path(paths.get("processed_ds_path", "data/processed")).resolve()
         / "train_regression.log"
     )
-    logger = _setup_logger(log_path)
+    logger = setup_logger("train_regression", log_path)
 
     seed = int(tcfg.get("seed", 42))
-    _set_seed(seed)
+    set_seed(seed)
 
-    device = _get_device(tcfg.get("device", "cuda"), logger=logger)
+    device = resolve_torch_device(tcfg.get("device", "cuda"), logger=logger)
     amp_cfg = bool(tcfg.get("amp", True))
     amp = amp_cfg and device.type == "cuda"
-    _log_device_info(logger, device)
+    log_torch_device_info(logger, device)
 
     epochs = int(tcfg.get("epochs", 30))
     batch_size = int(tcfg.get("batch_size", 32))
@@ -250,7 +165,13 @@ def main() -> None:
     if not val_index.exists():
         raise FileNotFoundError(f"val index not found: {val_index}")
 
-    weights_dir = _resolve_weights_dir(cfg)
+    model_identifier = str(cfg.get("model", {}).get("backbone", "resnet18")).lower()
+    weights_dir = resolve_task_weights_dir(
+        cfg,
+        weights_key="weights_dir_reg",
+        task_prefix="reg",
+        model_identifier=model_identifier,
+    )
 
     logger.info(f"device={device} amp={amp}")
     logger.info(f"train_index={train_index}")
