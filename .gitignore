@@ -63,4 +63,5 @@ Thumbs.db
 *.log
 *.tmp
 
-data/raw/
+data/*
+!data/*.py
