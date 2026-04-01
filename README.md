@@ -1,4 +1,4 @@
-# gauges-reader
+# Analog Gauge Reading Pipeline
 
 Gauge reading pipeline on `synthetic-analog-gauges`.
 
